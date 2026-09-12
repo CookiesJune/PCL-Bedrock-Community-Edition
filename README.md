@@ -2,7 +2,7 @@
 
 ![Platform](https://img.shields.io/badge/平台-Windows%20x64-lightgrey)
 ![Release](https://img.shields.io/github/v/release/CookiesJune/PCL-Bedrock-Community-Edition)
-![License](https://img.shields.io/badge/License-GPL--3.0-orange)
+![License](https://img.shields.io/badge/License-Apache--2.0-orange)
 
 > 基于 [PCL-Community-Edition](https://github.com/PCL-Community/PCL-CE) 二次开发的社区版 Minecraft 启动器。
 
