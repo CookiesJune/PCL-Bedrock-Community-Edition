@@ -1,6 +1,6 @@
 # PCL-BCE（Plain Craft Launcher Bedrock Community Edition）
 
-![Version](https://img.shields.io/badge/版本-v1.1.0)
+![Version](https://img.shields.io/badge/v1.1.0)
 ![Platform](https://img.shields.io/badge/平台-Windows%20x64-lightgrey)
 ![Release](https://img.shields.io/github/v/release/CookiesJune/PCL-Bedrock-Community-Edition)
 ![License](https://img.shields.io/badge/License-GPL--3.0-orange)
