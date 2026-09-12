@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project>
+  <!-- 覆盖 Sentry 的 WriteSentryAttributes：把 ProjectDirectory 写成相对路径 "."，
+       避免把构建机绝对路径（如 C:\Users\xxx\...）编译进程序集元数据 -->
+  <Target Name="WriteSentryAttributes"
+          Condition="'$(SentryAttributesFile)' != '' and ($(Language) == 'VB' or $(Language) == 'C#' or $(Language) == 'F#')"
+          BeforeTargets="BeforeCompile;CoreCompile">
+    <PropertyGroup>
+      <SentryAttributesFilePath>$(IntermediateOutputPath)$(SentryAttributesFile)</SentryAttributesFilePath>
+    </PropertyGroup>
+    <ItemGroup>
+      <SentryAttributes Include="System.Reflection.AssemblyMetadata">
+        <_Parameter1>Sentry.ProjectDirectory</_Parameter1>
+        <_Parameter2>.</_Parameter2>
+      </SentryAttributes>
+      <Compile Remove="$(SentryAttributesFilePath)" />
+    </ItemGroup>
+    <WriteCodeFragment AssemblyAttributes="@(SentryAttributes)" Language="$(Language)" OutputFile="$(SentryAttributesFilePath)">
+      <Output Condition="$(Language) != 'F#'" TaskParameter="OutputFile" ItemName="Compile" />
+      <Output Condition="$(Language) == 'F#'" TaskParameter="OutputFile" ItemName="CompileBefore" />
+      <Output TaskParameter="OutputFile" ItemName="FileWrites" />
+    </WriteCodeFragment>
+  </Target>
+</Project>

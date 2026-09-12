@@ -1,0 +1,5 @@
+﻿src = open(r'Plain Craft Launcher 2/Pages/PageSelectRight.xaml.cs', encoding='utf-8-sig', errors='ignore').read().replace('\r\n','\n')
+i = src.find('private void RefreshBeList')
+j = src.find('private void AddBeGroup')
+print('RefreshBeList span:', i, 'AddBeGroup at:', j)
+print(src[i:i+2600] if i>=0 else 'RefreshBeList NOT FOUND')

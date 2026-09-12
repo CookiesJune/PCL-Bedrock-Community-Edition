@@ -1,0 +1,1000 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Net.Http;
+using System.Text;
+using System.Text.Json.Nodes;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Windows;
+using Microsoft.Win32;
+using PCL.Core.App;
+using PCL.Core.Minecraft.Profile;
+using PCL.Core.Minecraft.Profile.Models;
+
+namespace PCL;
+
+/// <summary>
+///     小teto实验室定制版：其他游戏（地下城 / 传奇 / 基岩版）支持模块。
+///     基岩版版本库使用 McAppx 数据源，下载走微软官方 Xbox CDN 10 镜像并行（BedrockBoot 式）。
+/// </summary>
+public static class ModOtherGames
+{
+    // 镜像主机列表（微软官方 Xbox CDN，与 BedrockBoot 一致）
+    public static readonly string[] MirrorHosts =
+    {
+        "assets1.xboxlive.cn", "assets2.xboxlive.cn",
+        "assets1.xboxlive.com", "assets2.xboxlive.com",
+        "xvcf1.xboxlive.com", "xvcf2.xboxlive.com",
+        "d1.xboxlive.cn", "d2.xboxlive.cn",
+        "d1.xboxlive.com", "d2.xboxlive.com",
+    };
+
+    // 微软商店产品 ID
+    public const string ProductIdDungeons = "9P8MK4NC0LJB";
+    public const string ProductIdLegends = "9N98Z825TNFW";
+    public const string ProductIdBedrock = "9NBLGGH2JHXJ";
+    public const string ProductIdEducation = "9NBLGGH4R2R6";
+
+    // 包 FamilyName 前缀（best-effort）
+    public static readonly string[] BedrockFamilyPrefixes = { "Microsoft.MinecraftUWP_", "Microsoft.MinecraftWindowsBeta_" };
+    public static readonly string[] DungeonsFamilyPrefixes = { "Microsoft.59226Dungeons_", "Microsoft.Lovika_" };
+    public static readonly string[] LegendsFamilyPrefixes = { "Microsoft.MinecraftLegends_", "Microsoft.4297127D64EC6_" };
+    public static readonly string[] EducationFamilyPrefixes = { "Microsoft.MinecraftEducationEdition_" };
+
+    // McAppx 版本库（主源 + 备用）
+    public static readonly string[] BedrockJsonUrls =
+    {
+        "https://data.mcappx.com/v2/bedrock.json",
+        "https://raw.giteeusercontent.com/minecraftyjq/bedrock-version-db/raw/main/data/bedrock.json",
+        "https://api.chlna6666.com/api/v1/bedrock/mcappx",
+    };
+
+    private static readonly HttpClient Http = CreateHttp();
+
+    private static HttpClient CreateHttp()
+    {
+        var h = new HttpClient();
+        h.Timeout = TimeSpan.FromSeconds(25);
+        return h;
+    }
+
+    /// <summary>
+    ///     基岩版版本条目。
+    /// </summary>
+    public class BedrockVersion
+    {
+        public string Version = "";          // 例如 1.20.81
+        public string Type = "";             // Release / Preview
+        public string BuildType = "";        // UWP / GDK
+        public string Date = "";
+        public string Id = "";
+        public string Arch = "";
+        public string OSBuild = "";
+        public string Md5 = "";
+        public List<string> MetaData = new();
+        public string Display => $"{Version}  ({Type} / {BuildType})";
+
+        public bool IsUwp => string.Equals(BuildType, "UWP", StringComparison.OrdinalIgnoreCase);
+        public bool IsGdk => string.Equals(BuildType, "GDK", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    ///     拉取并解析基岩版版本库。
+    /// </summary>
+    public static async Task<List<BedrockVersion>> GetBedrockVersionsAsync()
+    {
+        foreach (var url in BedrockJsonUrls)
+        {
+            try
+            {
+                var json = await Http.GetStringAsync(url).ConfigureAwait(false);
+                var versions = ParseBedrockJson(json);
+                if (versions.Count > 0)
+                    return versions;
+            }
+            catch
+            {
+                // 尝试下一个源
+            }
+        }
+
+        return new List<BedrockVersion>();
+    }
+
+    /// <summary>
+    ///     解析 McAppx 版本库 JSON。
+    ///     结构：{ "From_mcappx.com": { 版本键: { Type, BuildType, ID, Date, Variations:[{Arch,OSbuild,MD5,MetaData:[]}] } } }
+    /// </summary>
+    public static List<BedrockVersion> ParseBedrockJson(string json)
+    {
+        var result = new List<BedrockVersion>();
+        try
+        {
+            var root = JsonNode.Parse(json);
+            var src = root?["From_mcappx.com"] as JsonObject;
+            if (src is null)
+            {
+                // 兼容直接是版本对象的情况
+                if (root is JsonObject ro)
+                    src = ro;
+            }
+
+            if (src is null) return result;
+
+            foreach (var kv in src)
+            {
+                var v = new BedrockVersion { Version = kv.Key };
+                var node = kv.Value as JsonObject;
+                if (node is null) continue;
+                v.Type = (string)node["Type"] ?? "";
+                v.BuildType = (string)node["BuildType"] ?? "";
+                v.Id = (string)node["ID"] ?? "";
+                v.Date = (string)node["Date"] ?? "";
+
+                var variations = node["Variations"] as JsonArray;
+                if (variations is not null && variations.Count > 0)
+                {
+                    // 优先取 x64 / x64_arm64 变体
+                    JsonObject best = null;
+                    foreach (var vari in variations)
+                    {
+                        var vo = vari as JsonObject;
+                        if (vo is null) continue;
+                        var arch = (string)vo["Arch"] ?? "";
+                        if (string.IsNullOrEmpty(arch) || arch == "x64" || arch.Contains("arm64"))
+                        {
+                            best = vo;
+                            if (arch.Contains("x64") && !arch.Contains("arm64")) break;
+                        }
+                    }
+
+                    best ??= variations[0] as JsonObject;
+                    if (best is not null)
+                    {
+                        v.Arch = (string)best["Arch"] ?? "";
+                        v.OSBuild = (string)best["OSbuild"] ?? "";
+                        v.Md5 = (string)best["MD5"] ?? "";
+                        var meta = best["MetaData"] as JsonArray;
+                        if (meta is not null)
+                        {
+                            foreach (var m in meta)
+                            {
+                                if (m is not null) v.MetaData.Add(m.GetValue<string>());
+                            }
+                        }
+                    }
+                }
+
+                result.Add(v);
+            }
+        }
+        catch
+        {
+            // 解析失败返回空
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    ///     通过微软 FE3 服务把 UWP 包的 UpdateID 解析为下载直链（BedrockBoot 同款格式）。
+    /// </summary>
+    private const string WU_DEVICE_ATTRIBUTES =
+        "E:BranchReadinessLevel=CBB&amp;DchuNvidiaGrfxExists=1&amp;ProcessorIdentifier=Intel64%20Family%206%20Model%2063%20Stepping%202&amp;CurrentBranch=rs4_release&amp;DataVer_RS5=1942&amp;FlightRing=Retail&amp;AttrDataVer=57&amp;InstallLanguage=en-US&amp;DchuAmdGrfxExists=1&amp;OSUILocale=en-US&amp;InstallationType=Client&amp;FlightingBranchName=&amp;Version_RS5=10&amp;UpgEx_RS5=Green&amp;GStatus_RS5=2&amp;OSSkuId=48&amp;App=WU&amp;InstallDate=1529700913&amp;ProcessorManufacturer=GenuineIntel&amp;AppVer=10.0.17134.471&amp;OSArchitecture=AMD64&amp;UpdateManagementGroup=2&amp;IsDeviceRetailDemo=0&amp;HidOverGattReg=C%3A%5CWINDOWS%5CSystem32%5CDriverStore%5CFileRepository%5Chidbthle.inf_amd64_467f181075371c89%5CMicrosoft.Bluetooth.Profiles.HidOverGatt.dll&amp;IsFlightingEnabled=0&amp;DchuIntelGrfxExists=1&amp;TelemetryLevel=1&amp;DefaultUserRegion=244&amp;DeferFeatureUpdatePeriodInDays=365&amp;Bios=Unknown&amp;WuClientVer=10.0.17134.471&amp;PausedFeatureStatus=1&amp;Steam=URL%3Asteam%20protocol&amp;Free=8to16&amp;OSVersion=10.0.17134.472&amp;DeviceFamily=Windows.Desktop";
+
+    public static async Task<List<string>> ResolveUwpUrlAsync(string updateId, string revision = "1")
+    {
+        var urls = new List<string>();
+        try
+        {
+            var now = DateTime.UtcNow;
+            var created = now.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'");
+            var expires = now.AddMinutes(5).ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'");
+
+            var body = new StringBuilder();
+            body.Append("<s:Envelope xmlns:a=\"http://www.w3.org/2005/08/addressing\" xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\">");
+            body.Append("<s:Header>");
+            body.Append("<a:Action s:mustUnderstand=\"1\">http://www.microsoft.com/SoftwareDistribution/Server/ClientWebService/GetExtendedUpdateInfo2</a:Action>");
+            body.Append("<a:MessageID>urn:uuid:5754a03d-d8d5-489f-b24d-efc31b3fd32d</a:MessageID>");
+            body.Append("<a:To s:mustUnderstand=\"1\">https://fe3.delivery.mp.microsoft.com/ClientWebService/Client.asmx/secured</a:To>");
+            body.Append("<o:Security s:mustUnderstand=\"1\" xmlns:o=\"http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd\">");
+            body.Append("<Timestamp xmlns=\"http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd\">");
+            body.Append("<Created>").Append(created).Append("</Created>");
+            body.Append("<Expires>").Append(expires).Append("</Expires>");
+            body.Append("</Timestamp>");
+            body.Append("<wuws:WindowsUpdateTicketsToken wsu:id=\"ClientMSA\" xmlns:wsu=\"http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd\" xmlns:wuws=\"http://schemas.microsoft.com/msus/2014/10/WindowsUpdateAuthorization\">");
+            body.Append("<TicketType Name=\"AAD\" Version=\"1.0\" Policy=\"MBI_SSL\"></TicketType>");
+            body.Append("</wuws:WindowsUpdateTicketsToken>");
+            body.Append("</o:Security>");
+            body.Append("</s:Header>");
+            body.Append("<s:Body>");
+            body.Append("<GetExtendedUpdateInfo2 xmlns=\"http://www.microsoft.com/SoftwareDistribution/Server/ClientWebService\">");
+            body.Append("<updateIDs><UpdateIdentity><UpdateID>").Append(updateId).Append("</UpdateID><RevisionNumber>").Append(revision).Append("</RevisionNumber></UpdateIdentity></updateIDs>");
+            body.Append("<infoTypes><XmlUpdateFragmentType>FileUrl</XmlUpdateFragmentType></infoTypes>");
+            body.Append("<deviceAttributes>").Append(WU_DEVICE_ATTRIBUTES).Append("</deviceAttributes>");
+            body.Append("</GetExtendedUpdateInfo2>");
+            body.Append("</s:Body></s:Envelope>");
+
+            using var req = new HttpRequestMessage(HttpMethod.Post, "https://fe3.delivery.mp.microsoft.com/ClientWebService/client.asmx/secured");
+            req.Headers.TryAddWithoutValidation("User-Agent", "Windows-Update-Agent/10.0.17134.471 Client-Protocol/2.0");
+            req.Content = new StringContent(body.ToString(), Encoding.UTF8, "application/soap+xml");
+
+            var resp = await Http.SendAsync(req).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode) return urls;
+            var xml = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+
+            // 提取 <Url>（优先 tlu.dl.delivery，其次 dl.delivery）
+            foreach (var host in new[] { "tlu.dl.delivery", "dl.delivery" })
+            {
+                var idx = 0;
+                while (true)
+                {
+                    idx = xml.IndexOf("<Url>", idx, StringComparison.OrdinalIgnoreCase);
+                    if (idx < 0) break;
+                    idx += 5;
+                    var end = xml.IndexOf("</Url>", idx, StringComparison.OrdinalIgnoreCase);
+                    if (end < 0) break;
+                    var u = xml.Substring(idx, end - idx).Trim();
+                    if (u.StartsWith("http") && u.Contains(host))
+                        urls.Add(u);
+                    idx = end + 6;
+                }
+
+                if (urls.Count > 0) break;
+            }
+        }
+        catch
+        {
+            // FE3 失败返回空
+        }
+
+        return urls;
+    }
+
+    /// <summary>
+    ///     下载任务回调：进度百分比（0-100）与速度（字节/秒）。
+    /// </summary>
+    public class DownloadProgressEventArgs : EventArgs
+    {
+        public double Percent;
+        public long SpeedBytes;
+        public long DoneBytes;
+        public long TotalBytes;
+    }
+
+    /// <summary>
+    ///     使用 10 镜像并行分片下载单个文件，支持断点续传。下载完成后可选 MD5 校验。
+    /// </summary>
+    public static async Task DownloadFileMultiMirrorAsync(string router, string targetPath, string expectMd5,
+        IProgress<DownloadProgressEventArgs> progress, Action<string, long, long> perMirror = null)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
+
+        // 1) HEAD 探活，取可用镜像
+        var aliveMirrors = new List<string>();
+        using (var headHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(8) })
+        {
+            foreach (var host in MirrorHosts)
+            {
+                try
+                {
+                    using var req = new HttpRequestMessage(HttpMethod.Head, $"http://{host}{router}");
+                    using var resp = await headHttp.SendAsync(req).ConfigureAwait(false);
+                    if (resp.IsSuccessStatusCode)
+                    {
+                        aliveMirrors.Add(host);
+                        perMirror?.Invoke(host, 0, 0);
+                        if (aliveMirrors.Count >= 5) break;
+                    }
+                }
+                catch
+                {
+                    // 镜像不可用
+                }
+            }
+        }
+
+        if (aliveMirrors.Count == 0)
+            aliveMirrors.Add(MirrorHosts[0]);
+
+        // 2) 探测文件总大小（用第一个可用镜像）
+        long total = 0;
+        using (var probe = new HttpClient { Timeout = TimeSpan.FromSeconds(10) })
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Head, $"http://{aliveMirrors[0]}{router}");
+            using var resp = await probe.SendAsync(req).ConfigureAwait(false);
+            if (resp.Content.Headers.ContentLength.HasValue)
+                total = resp.Content.Headers.ContentLength.Value;
+        }
+
+        if (total <= 0)
+            total = 1743065088; // 兜底（实测 GDK 包大小约 1.62GB；实际会从 HEAD 得到真实值）
+
+        // 3) 分片下载（8MB 一片，最多 8 并发）
+        const int chunkSize = 8 * 1024 * 1024;
+        long downloaded = 0;
+        var lockObj = new object();
+        var started = DateTime.UtcNow;
+
+        // 先删除可能存在的临时文件
+        var tmpPath = targetPath + ".part";
+        if (File.Exists(tmpPath)) File.Delete(tmpPath);
+        using (var fs = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            fs.SetLength(total);
+        }
+
+        var chunkCount = (int)((total + chunkSize - 1) / chunkSize);
+        var mirrorIndex = 0;
+
+        await Task.WhenAll(Enumerable.Range(0, Math.Min(8, chunkCount)).Select(_ => Task.Run(async () =>
+        {
+            while (true)
+            {
+                long start;
+                int idx;
+                lock (lockObj)
+                {
+                    idx = chunkIndex;
+                    if (idx >= chunkCount) return;
+                    chunkIndex++;
+                    start = (long)idx * chunkSize;
+                }
+
+                var end = Math.Min(total - 1, start + chunkSize - 1);
+                var host = aliveMirrors[Math.Abs(Interlocked.Increment(ref mirrorIndex)) % aliveMirrors.Count];
+                try
+                {
+                    using var req = new HttpRequestMessage(HttpMethod.Get, $"http://{host}{router}");
+                    req.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(start, end);
+                    using var resp = await Http.SendAsync(req).ConfigureAwait(false);
+                    if (!resp.IsSuccessStatusCode) throw new Exception("HTTP " + resp.StatusCode);
+                    await using var src = await resp.Content.ReadAsStreamAsync().ConfigureAwait(false);
+                    var buffer = new byte[81920];
+                    long offset = start;
+                    int read;
+                    while ((read = await src.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false)) > 0)
+                    {
+                        lock (lockObj)
+                        {
+                            using (var wfs = new FileStream(tmpPath, FileMode.Open, FileAccess.Write, FileShare.ReadWrite))
+                            {
+                                wfs.Seek(offset, SeekOrigin.Begin);
+                                wfs.Write(buffer, 0, read);
+                            }
+
+                            offset += read;
+                            downloaded += read;
+                        }
+                    }
+
+                    perMirror?.Invoke(host, end - start + 1, (end - start + 1));
+                    progress?.Report(new DownloadProgressEventArgs
+                    {
+                        DoneBytes = Interlocked.Read(ref downloaded),
+                        TotalBytes = total,
+                        Percent = total <= 0 ? 0 : Math.Min(100, 100.0 * Interlocked.Read(ref downloaded) / total),
+                        SpeedBytes = (long)(Interlocked.Read(ref downloaded) / Math.Max(1, (DateTime.UtcNow - started).TotalSeconds)),
+                    });
+                }
+                catch
+                {
+                    // 分片失败：退回该分片重试（用其他镜像）
+                    lock (lockObj)
+                    {
+                        chunkIndex--;
+                    }
+                }
+            }
+        })).ToArray());
+
+        // 4) 收尾：改名 + MD5 校验
+        if (File.Exists(targetPath)) File.Delete(targetPath);
+        File.Move(tmpPath, targetPath);
+
+        if (!string.IsNullOrEmpty(expectMd5))
+        {
+            var md5 = ComputeMd5(targetPath);
+            if (!string.Equals(md5, expectMd5, StringComparison.OrdinalIgnoreCase))
+                ModBase.Log($"[OtherGames] MD5 校验不一致：实际 {md5}，期望 {expectMd5}（文件保留）");
+        }
+    }
+
+    private static int chunkIndex;
+
+    /// <summary>
+    ///     计算文件 MD5。
+    /// </summary>
+    public static string ComputeMd5(string path)
+    {
+        using var fs = File.OpenRead(path);
+        using var md5 = System.Security.Cryptography.MD5.Create();
+        var hash = md5.ComputeHash(fs);
+        return Convert.ToHexString(hash);
+    }
+
+    /// <summary>
+    ///     下载目录：优先配置的缓存目录，否则 .minecraft/BE。
+    /// </summary>
+    public static string DownloadFolder()
+    {
+        try
+        {
+            var cache = States.Tool.DownloadFolder;
+            if (!string.IsNullOrEmpty(cache))
+                return Path.Combine(cache, "Bedrock") + Path.DirectorySeparatorChar;
+        }
+        catch
+        {
+            // 忽略
+        }
+
+        return Path.Combine(ModFolder.mcFolderSelected, "BE") + Path.DirectorySeparatorChar;
+    }
+
+    /// <summary>
+    ///     扫描已安装的 UWP 包，返回匹配前缀的包信息。
+    /// </summary>
+        public static List<InstalledGameInfo> FindGamePackage(string[] familyPrefixes)
+    {
+        var result = new List<InstalledGameInfo>();
+        try
+        {
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var roots = new[]
+            {
+                @"HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\Appx\AppxAllUserStore\Applications",
+                @"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Appx\AppxAllUserStore\Applications",
+            };
+
+            foreach (var root in roots)
+            {
+                string[] names;
+                try
+                {
+                    using var key = RegistryKey.OpenBaseKey(RegistryHive.CurrentUser, RegistryView.Registry64).OpenSubKey(root)
+                        ?? RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64).OpenSubKey(root);
+                    names = key?.GetSubKeyNames() ?? Array.Empty<string>();
+                }
+                catch
+                {
+                    continue;
+                }
+
+                foreach (var fullName in names)
+                {
+                    // 完整包名格式：{FamilyName}_{Version}_{Arch}_{PublisherHash}
+                    // 例如 Microsoft.MinecraftUWP_1.21.45.0_x64__8wekyb3d8bbwe
+                    var m = System.Text.RegularExpressions.Regex.Match(fullName,
+                        @"^(?<fam>[^_]+)_(?<ver>\d+\.\d+\.\d+\.\d+)_");
+                    if (!m.Success) continue;
+                    var fam = m.Groups["fam"].Value;
+                    if (!familyPrefixes.Any(p => fam.StartsWith(p.TrimEnd('_'), StringComparison.OrdinalIgnoreCase)))
+                        continue;
+                    if (!seen.Add(fullName)) continue;
+
+                    var pubHash = fullName.Substring(fullName.LastIndexOf('_') + 1);
+                    var info = new InstalledGameInfo
+                    {
+                        FullName = fullName,
+                        Name = fam,
+                        FamilyName = fam + "_" + pubHash,
+                        Version = m.Groups["ver"].Value,
+                        Aumid = fam + "_" + pubHash + "!App",
+                        IsOk = true,
+                    };
+                    result.Add(info);
+                }
+            }
+        }
+        catch
+        {
+            // 无注册表访问能力
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    ///     已安装游戏信息。
+    /// </summary>
+    public class InstalledGameInfo
+    {
+        public string FamilyName = "";
+        public string FullName = "";
+        public string Name = "";
+        public string Version = "";
+        public string Aumid = "";
+        public bool IsOk;
+    }
+
+    /// <summary>
+    ///     启动已安装的 UWP 游戏。
+    /// </summary>
+    public static bool LaunchPackage(InstalledGameInfo info)
+    {
+        try
+        {
+            var aumid = string.IsNullOrEmpty(info.Aumid) ? info.FamilyName + "!App" : info.Aumid;
+            Process.Start(new ProcessStartInfo("shell:AppsFolder\\" + aumid) { UseShellExecute = true });
+            return true;
+        }
+        catch (Exception ex)
+        {
+            ModBase.Log(ex, "启动游戏失败");
+            return false;
+        }
+    }
+
+
+    /// <summary>
+    ///     直接启动已安装的基岩版（若有）。
+    /// </summary>
+    public static bool LaunchBedrock()
+    {
+        var list = FindGamePackage(BedrockFamilyPrefixes);
+        if (list.Count == 0) return false;
+        return LaunchPackage(list.First());
+    }
+
+    /// <summary>
+    ///     基岩版实例信息。
+    /// </summary>
+    public class BedrockInstanceInfo
+    {
+        public string Name = "";
+        public string PathInstance = "";
+        public int ResourcePackCount;
+        public int AddonCount;
+        public int WorldCount;
+    }
+
+    /// <summary>
+    ///     枚举 .minecraft/BE/ 下的基岩版实例。
+    /// </summary>
+    public static List<BedrockInstanceInfo> GetBedrockInstances()
+    {
+        var result = new List<BedrockInstanceInfo>();
+        try
+        {
+            var baseDir = Path.Combine(ModFolder.mcFolderSelected, "BE");
+            if (!Directory.Exists(baseDir)) return result;
+            foreach (var dir in Directory.GetDirectories(baseDir).OrderBy(d => d))
+            {
+                result.Add(new BedrockInstanceInfo
+                {
+                    Name = Path.GetFileName(dir),
+                    PathInstance = dir,
+                    ResourcePackCount = CountFolderFiles(Path.Combine(dir, "resource_packs")),
+                    AddonCount = CountFolderFiles(Path.Combine(dir, "behavior_packs")),
+                    WorldCount = CountFolderFiles(Path.Combine(dir, "worlds")),
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            ModBase.Log(ex, "枚举基岩版实例失败");
+        }
+        return result;
+    }
+
+    private static int CountFolderFiles(string p)
+    {
+        try
+        {
+            return Directory.Exists(p)
+                ? Directory.EnumerateFiles(p, "*.*", SearchOption.AllDirectories).Count()
+                : 0;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    /// <summary>
+    ///     打开微软商店对应产品页。
+    /// </summary>
+    public static void OpenStore(string productId)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo($"ms-windows-store://pdp/?ProductId={productId}") { UseShellExecute = true });
+        }
+        catch
+        {
+            // 忽略
+        }
+    }
+
+    /// <summary>
+    ///     传奇正版校验结果。
+    /// </summary>
+    public enum LegendsCheckResult
+    {
+        Owned,
+        NotLoggedIn,
+        NotOwned,
+        Unverifiable,
+    }
+
+    public class LegendsCheckOutcome
+    {
+        public LegendsCheckResult Result;
+        public string Message = "";
+    }
+
+    /// <summary>
+    ///     传奇启动前正版校验：① PCL2 已登录微软账号 ② 本地包已安装且授权有效。
+    /// </summary>
+    public static LegendsCheckOutcome CheckLegends()
+    {
+        var outcome = new LegendsCheckOutcome();
+
+        // ① 微软账号登录门槛
+        var loggedIn = false;
+        try
+        {
+            var profile = ProfileService.Current;
+            if (profile is not null && profile.ProfileType == ProfileType.Microsoft)
+                loggedIn = true;
+        }
+        catch
+        {
+            loggedIn = false;
+        }
+
+        var installed = FindGamePackage(LegendsFamilyPrefixes);
+        var hasValid = installed.Any(i => i.IsOk);
+
+        if (!loggedIn)
+        {
+            outcome.Result = LegendsCheckResult.NotLoggedIn;
+            outcome.Message = "未登录微软账号，无法确认账号持有权。请先在启动器登录微软账号后重试。";
+            return outcome;
+        }
+
+        if (!hasValid)
+        {
+            outcome.Result = LegendsCheckResult.NotOwned;
+            outcome.Message = "未检测到已安装的 Minecraft Legends 有效授权。请先在微软商店购买并安装该游戏。";
+            return outcome;
+        }
+
+        outcome.Result = LegendsCheckResult.Owned;
+        outcome.Message = "正版校验通过：已登录微软账号且本地授权有效，确认可启动 Minecraft Legends。";
+        return outcome;
+    }
+
+    /// <summary>
+    ///     获取已登录的微软账号名（用于显示）。
+    /// </summary>
+    public static string LoggedInMsName()
+    {
+        try
+        {
+            var profile = ProfileService.Current;
+            if (profile is not null && profile.ProfileType == ProfileType.Microsoft)
+                return profile?.UserName ?? "";
+        }
+        catch
+        {
+            // 忽略
+        }
+
+        return "";
+    }
+
+    /// <summary>
+    ///     通过微软商店公开接口尽力查询产品最新版本（best-effort，失败返回空字符串）。
+    /// </summary>
+    public static async Task<string> QueryStoreLatestVersionAsync(string productId)
+    {
+        try
+        {
+            // store.rg-adguard.net 公共工具（type=productid）
+            using var req = new HttpRequestMessage(HttpMethod.Post, "https://store.rg-adguard.net/api/GetFiles");
+            req.Content = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                { "type", "productid" },
+                { "url", productId },
+                { "ring", "Retail" },
+                { "lang", "zh-CN" },
+            });
+            var resp = await Http.SendAsync(req).ConfigureAwait(false);
+            var html = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+            // 在 HTML 中找形如 ..._1.2.3.4_... 的版本号
+            var m = System.Text.RegularExpressions.Regex.Match(html,
+                @"_(\d+\.\d+\.\d+(?:\.\d+)?)_", System.Text.RegularExpressions.RegexOptions.Compiled);
+            return m.Success ? m.Groups[1].Value : "";
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
+    /// <summary>
+    ///     格式化字节数为可读字符串。
+    /// </summary>
+    public static string FormatBytes(long bytes)
+    {
+        if (bytes < 1024) return bytes + " B";
+        if (bytes < 1024 * 1024) return (bytes / 1024.0).ToString("0.0") + " KB";
+        if (bytes < 1024L * 1024 * 1024) return (bytes / 1048576.0).ToString("0.00") + " MB";
+        return (bytes / 1073741824.0).ToString("0.00") + " GB";
+    }
+    /// <summary>
+    ///     是否已登录微软账号（正版验证第一层门槛）。
+    /// </summary>
+    public static bool IsMicrosoftLoggedIn()
+    {
+        try
+        {
+            var p = ProfileService.Current;
+            return p is not null && p.ProfileType == ProfileType.Microsoft;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    ///     从 store.rg-adguard.net 获取产品的可下载应用包 URL 列表（.appx/.appxbundle/.msix/.msixbundle，排除依赖与映射文件）。
+    /// </summary>
+    public static async Task<List<string>> GetStorePackageUrlsAsync(string productId)
+    {
+        var urls = new List<string>();
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Post, "https://store.rg-adguard.net/api/GetFiles");
+            req.Content = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                { "type", "productid" },
+                { "url", productId },
+                { "ring", "Retail" },
+                { "lang", "zh-CN" },
+            });
+            var resp = await Http.SendAsync(req).ConfigureAwait(false);
+            var html = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+            var matches = System.Text.RegularExpressions.Regex.Matches(html,
+                @"href=""(?<u>https?://[^""]+?\.(?:appx|appxbundle|msix|msixbundle))""",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            foreach (System.Text.RegularExpressions.Match m in matches)
+            {
+                var u = m.Groups["u"].Value;
+                if (u.Contains("Dependencies", StringComparison.OrdinalIgnoreCase)) continue;
+                if (u.Contains(".blockmap", StringComparison.OrdinalIgnoreCase)) continue;
+                if (u.Contains("_eappx", StringComparison.OrdinalIgnoreCase)) continue;
+                if (!urls.Contains(u)) urls.Add(u);
+            }
+            return urls
+                .OrderBy(u => u.Contains("x64", StringComparison.OrdinalIgnoreCase) || u.Contains("neutral", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+                .ThenBy(u => u.Length)
+                .ToList();
+        }
+        catch
+        {
+            return urls;
+        }
+    }
+
+    /// <summary>
+    ///     下载单个 URL 到本地文件（带进度，长超时）。
+    /// </summary>
+    public static async Task DownloadUrlAsync(string url, string targetPath, IProgress<DownloadProgressEventArgs> progress)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
+        using var dl = new HttpClient { Timeout = TimeSpan.FromMinutes(40) };
+        using var resp = await dl.GetAsync(url, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+        resp.EnsureSuccessStatusCode();
+        var total = resp.Content.Headers.ContentLength ?? 0;
+        await using var src = await resp.Content.ReadAsStreamAsync().ConfigureAwait(false);
+        await using var dst = File.Create(targetPath);
+        var buffer = new byte[81920];
+        long done = 0;
+        var started = DateTime.UtcNow;
+        int read;
+        while ((read = await src.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false)) > 0)
+        {
+            await dst.WriteAsync(buffer, 0, read).ConfigureAwait(false);
+            done += read;
+            progress?.Report(new DownloadProgressEventArgs
+            {
+                DoneBytes = done,
+                TotalBytes = total,
+                Percent = total <= 0 ? 0 : Math.Min(100, 100.0 * done / total),
+                SpeedBytes = (long)(done / Math.Max(1, (DateTime.UtcNow - started).TotalSeconds)),
+            });
+        }
+    }
+
+    /// <summary>
+    ///     判断指定文件夹是否为基岩版（BE）游戏文件夹（参考 BedrockBoot 结构）。
+    ///     特征：直接含 AppxManifest.xml（loose UWP 包根目录）、Minecraft.Windows.exe（GDK 解包）、
+    ///     resource_packs+behavior_packs（BedrockBoot 管理结构）、versions 子目录含 AppxManifest.xml。
+    /// </summary>
+    public static bool IsBedrockFolder(string path)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(path) || !Directory.Exists(path)) return false;
+            if (File.Exists(Path.Combine(path, "AppxManifest.xml"))) return true;
+            if (File.Exists(Path.Combine(path, "Minecraft.Windows.exe"))) return true;
+            if (Directory.Exists(Path.Combine(path, "resource_packs")) &&
+                Directory.Exists(Path.Combine(path, "behavior_packs"))) return true;
+            var v = Path.Combine(path, "versions");
+            if (Directory.Exists(v) &&
+                Directory.EnumerateFiles(v, "AppxManifest.xml", SearchOption.AllDirectories).Any()) return true;
+            var bv = Path.Combine(path, "bedrock_versions");
+            if (Directory.Exists(bv) &&
+                Directory.EnumerateFiles(bv, "AppxManifest.xml", SearchOption.AllDirectories).Any()) return true;
+        }
+        catch
+        {
+            // 忽略
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    ///     当前选中的 BE 实例下载/安装目标：若当前选中的 Minecraft 文件夹是 BE 文件夹，则直接使用该实例文件夹；
+    ///     否则回退到默认 BE 下载目录。
+    /// </summary>
+    public static string CurrentBedrockInstanceFolder()
+    {
+        try
+        {
+            var sel = ModFolder.mcFolderSelected;
+            if (IsBedrockFolder(sel))
+                return Path.TrimEndingDirectorySeparator(sel) + Path.DirectorySeparatorChar;
+        }
+        catch
+        {
+            // 忽略
+        }
+
+        return DownloadFolder();
+    }
+
+    /// <summary>
+    ///     在 BE 实例文件夹中查找可注册的 AppxManifest.xml（根目录或 versions 子目录）。
+    /// </summary>
+    private static string FindAppxManifestInFolder(string folder)
+    {
+        try
+        {
+            var direct = Path.Combine(folder, "AppxManifest.xml");
+            if (File.Exists(direct)) return direct;
+            var v = Path.Combine(folder, "versions");
+            if (Directory.Exists(v))
+                foreach (var f in Directory.EnumerateFiles(v, "AppxManifest.xml", SearchOption.AllDirectories))
+                    return f;
+            var bv = Path.Combine(folder, "bedrock_versions");
+            if (Directory.Exists(bv))
+                foreach (var f in Directory.EnumerateFiles(bv, "AppxManifest.xml", SearchOption.AllDirectories))
+                    return f;
+        }
+        catch
+        {
+            // 忽略
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    ///     以开发者模式注册 loose UWP 包（Add-AppxPackage -Register）。
+    /// </summary>
+    public static bool RegisterLooseAppx(string manifest)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo("powershell.exe")
+            {
+                Arguments = $"-NoProfile -ExecutionPolicy Bypass -Command \"Add-AppxPackage -Register '{manifest}' -ForceUpdateFromAnyVersion\"",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            using var p = Process.Start(psi);
+            if (p is null) return false;
+            p.StandardOutput.ReadToEnd();
+            p.StandardError.ReadToEnd();
+            if (!p.WaitForExit(180000))
+            {
+                try { p.Kill(); } catch { }
+                return false;
+            }
+
+            return p.ExitCode == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    ///     启动基岩版实例（BedrockBoot 式启动）。不做任何正版校验，直接启动已注册的 UWP 包。
+    ///     返回空字符串表示启动流程已受理，否则返回错误提示。
+    /// </summary>
+    public static string LaunchBedrockInstance(string folder)
+    {
+        var installed = FindGamePackage(BedrockFamilyPrefixes);
+        if (installed.Count == 0)
+        {
+            // 尝试从 BE 实例文件夹注册 loose UWP 包
+            var manifest = FindAppxManifestInFolder(folder);
+            if (manifest is null)
+                return "未找到已安装的基岩版。请先在「下载 - 基岩版」页下载并安装一个版本（或安装微软商店版）。";
+
+            if (!IsDeveloperMode())
+                return "需要开启 Windows 开发者模式才能注册 UWP 包（设置 → 开发者选项）。已为你打开设置页。";
+            Process.Start(new ProcessStartInfo("ms-settings:developers") { UseShellExecute = true });
+
+            var regOk = RegisterLooseAppx(manifest);
+            if (!regOk)
+                return "UWP 包注册失败，请确认已开启开发者模式后重试。";
+
+            installed = FindGamePackage(BedrockFamilyPrefixes);
+            if (installed.Count == 0)
+                return "UWP 包注册后仍未检测到基岩版包，请重新下载安装。";
+        }
+
+        var pkg = installed.First();
+
+        // 直接启动（BedrockBoot 式：shell:AppsFolder 启动已注册 UWP 包），不做任何正版校验
+        return LaunchPackage(pkg) ? "" : "基岩版启动失败。";
+    }
+
+    /// <summary>
+    ///     是否已开启 Windows 开发者模式（BedrockBoot 式 UWP loose 注册前置条件）。
+    /// </summary>
+    public static bool IsDeveloperMode()
+    {
+        try
+        {
+            using var key = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64)
+                .OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock");
+            var v = key?.GetValue("AllowDevelopmentWithoutDevLicense");
+            return v is int i && i == 1;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    ///     通过 Add-AppxPackage 安装应用包（需商店授权有效；未持正版会安装失败）。
+    /// </summary>
+    public static bool InstallAppx(string path)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo("powershell.exe")
+            {
+                Arguments = "-NoProfile -ExecutionPolicy Bypass -Command \"Add-AppxPackage -Path '" + path + "'\"",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            using var p = Process.Start(psi);
+            if (p is null) return false;
+            if (!p.WaitForExit(240000)) { try { p.Kill(); } catch { } return false; }
+            return p.ExitCode == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+}
