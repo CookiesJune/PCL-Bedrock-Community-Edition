@@ -358,3 +358,6 @@ artifact2/
 *.orig
 *.old
 *.bak*
+
+# 豆包开发期临时脚本（probe/check/patch 等调试用，非项目源码）
+*.py

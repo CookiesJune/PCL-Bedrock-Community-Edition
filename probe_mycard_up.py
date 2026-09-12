@@ -1,6 +1,0 @@
-﻿src = open(r'Plain Craft Launcher 2/Controls/MyCard.cs', encoding='utf-8-sig', errors='ignore').read().replace(chr(13),'')
-i = src.find('private void MyCard_MouseLeftButtonUp')
-print(src[i:i+1200])
-print('=== SwapedHeight ===')
-j = src.find('SwapedHeight')
-print(src[max(0,j-100):j+300])
