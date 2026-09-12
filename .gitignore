@@ -357,3 +357,4 @@ artifact2/
 *.back*
 *.orig
 *.old
+*.bak*
