@@ -18,7 +18,7 @@
 
 ## 📥 下载
 
-前往 **[Releases 页面](https://github.com/CookiesJune/PCL-Bedrock-Community-Edition/releases)** 或 **[官网](https://pcl-bce.netlify.app/)**下载最新版本。
+前往 **[Releases 页面](https://github.com/CookiesJune/PCL-Bedrock-Community-Edition/releases)** 或 **[官网](https://pcl-bce.netlify.app/)** 下载最新版本。
 
 | 文件 | 说明 |
 | --- | --- |
