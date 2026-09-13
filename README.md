@@ -1,3 +1,5 @@
+[简体中文](README.md) | **English**
+
 # PCL-BCE（Plain Craft Launcher Bedrock Community Edition）
 
 ![Platform](https://img.shields.io/badge/平台-Windows%20x64-lightgrey)
