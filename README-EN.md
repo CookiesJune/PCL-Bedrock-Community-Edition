@@ -24,8 +24,8 @@ Get the latest version from the [Releases page](https://github.com/CookiesJune/P
 
 | File | Description |
 | --- | --- |
-| `PCL-BCE_x64_v1.1.8.zip` | Archive, extract and run (approx. 18 MB) |
-| `PCL-BCE_x64_v1.1.8.exe` | Standalone executable (approx. 50 MB) |
+| `PCL-BCE_x64_v1.2.0.zip` | Archive, extract and run (approx. 18 MB)，but it havn't now |
+| `PCL-BCE_x64_v1.2.0.exe` | Standalone executable (approx. 50 MB) |
 
 > Antivirus software may flag this program: it is an unsigned third-party community tool. Please add it to the trusted zone before running. Verify the file hash before downloading to prevent tampering.
 
