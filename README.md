@@ -1,4 +1,4 @@
-**[简体中文](README.md)** | **[English](README-EN.md)**
+**简体中文** | **[English](README-EN.md)**
 
 # PCL-BCE（Plain Craft Launcher Bedrock Community Edition）
 
