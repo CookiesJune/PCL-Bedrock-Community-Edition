@@ -24,12 +24,17 @@ Get the latest version from the [Releases page](https://github.com/CookiesJune/P
 
 | File | Description |
 | --- | --- |
-| `PCL-BCE_x64_v1.1.1.zip` | Archive, extract and run (approx. 18 MB) |
-| `PCL-BCE_x64_v1.1.1.exe` | Standalone executable (approx. 50 MB) |
+| `PCL-BCE_x64_v1.1.8.zip` | Archive, extract and run (approx. 18 MB) |
+| `PCL-BCE_x64_v1.1.8.exe` | Standalone executable (approx. 50 MB) |
 
 > Antivirus software may flag this program: it is an unsigned third-party community tool. Please add it to the trusted zone before running. Verify the file hash before downloading to prevent tampering.
 
 ## Changelog
+
+### v1.1.8
+- Greatly improved the Bedrock experience: instance settings, resource management, launch and log optimization.
+- Added skin pack management; behavior packs / resource packs / worlds / screenshots managed in dedicated folders.
+- Improved launch and exit logs; added a process-kill button for the game.
 
 ### v1.1.1
 - Clean up embedded build path info (Sentry metadata relativized).
